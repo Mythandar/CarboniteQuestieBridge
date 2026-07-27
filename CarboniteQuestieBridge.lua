@@ -1,5 +1,5 @@
 local ADDON_NAME = ...
-local VERSION = "0.3.0"
+local VERSION = "0.3.1"
 
 local Bridge = CreateFrame("Frame")
 Bridge:RegisterEvent("ADDON_LOADED")
@@ -99,10 +99,21 @@ local function GetQuestieMap()
 end
 
 local function GetAreaName(areaID)
-    if type(GetMapNameByID) == "function" then
-        local name = GetMapNameByID(areaID)
-        if name and name ~= "" then
-            return name
+    if QuestieLoader and QuestieLoader.ImportModule then
+        local ok, ZoneDB = pcall(QuestieLoader.ImportModule, QuestieLoader, "ZoneDB")
+        if ok and ZoneDB then
+            if type(ZoneDB.GetAreaNameByAreaId) == "function" then
+                local name = ZoneDB:GetAreaNameByAreaId(areaID)
+                if name and name ~= "" then
+                    return name
+                end
+            end
+            if type(ZoneDB.GetAreaName) == "function" then
+                local name = ZoneDB:GetAreaName(areaID)
+                if name and name ~= "" then
+                    return name
+                end
+            end
         end
     end
 
@@ -144,6 +155,19 @@ local function ResolveCarboniteMapID(areaID)
         return Bridge.areaToCarboniteMap[areaID] or nil
     end
 
+    -- Carbonite's own quest renderer resolves its zone IDs through Nx.Map.NTMI.
+    -- Questie's AreaID values are the same legacy AreaTable IDs, so this is the
+    -- authoritative conversion and avoids trying to treat an AreaID as a map ID.
+    if Nx and Nx.Map and type(Nx.Map.NTMI) == "table" then
+        local directMapID = Nx.Map.NTMI[areaID]
+        if directMapID then
+            Bridge.areaToCarboniteMap[areaID] = directMapID
+            Bridge.unresolvedAreas[areaID] = nil
+            return directMapID
+        end
+    end
+
+    -- Fallback for unusual parent/sub-zone records that do not exist in NTMI.
     local index = BuildCarboniteNameIndex()
     local areaName = GetAreaName(areaID)
     if not index or not areaName then
@@ -167,7 +191,9 @@ local function ResolveCarboniteMapID(areaID)
     end
 
     Bridge.areaToCarboniteMap[areaID] = mapID or false
-    if not mapID then
+    if mapID then
+        Bridge.unresolvedAreas[areaID] = nil
+    else
         Bridge.unresolvedAreas[areaID] = areaName
     end
     return mapID
@@ -390,7 +416,7 @@ Bridge:SetScript("OnUpdate", function(self, elapsed)
     InstallQuestieHook()
     InstallCarboniteHook()
 
-    if self.questieHookInstalled and not self.initialScanDone then
+    if not self.initialScanDone and self.questieHookInstalled and self.carboniteHookInstalled then
         if ScanExistingQuestieMarkers(true) then
             self.initialScanDone = true
         end
