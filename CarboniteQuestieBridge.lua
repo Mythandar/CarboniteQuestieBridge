@@ -1,11 +1,12 @@
 local ADDON_NAME = ...
-local VERSION = "0.2.0"
+local VERSION = "0.2.1"
 
 local Bridge = CreateFrame("Frame")
 Bridge:RegisterEvent("ADDON_LOADED")
 Bridge:RegisterEvent("PLAYER_LOGIN")
 Bridge.markers = {}
 Bridge.markerCount = 0
+Bridge.testWaypoint = nil
 
 local function Print(message)
     DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99CQB|r: " .. tostring(message))
@@ -140,27 +141,65 @@ local function ScanExistingQuestieMarkers()
         questCount,
         areaCount
     ))
+end
 
-    local shown = 0
-    for _, marker in pairs(Bridge.markers) do
-        shown = shown + 1
-        Print(string.format(
-            "quest=%s starter=%s icon=%s area=%s x=%.2f y=%.2f",
-            tostring(marker.questId),
-            tostring(marker.starter),
-            tostring(marker.icon),
-            tostring(marker.areaID),
-            tonumber(marker.x) or 0,
-            tonumber(marker.y) or 0
-        ))
-        if shown >= 20 then
-            break
+local function CreateCarboniteTestWaypoint()
+    if not TomTom or type(TomTom.AddWaypoint) ~= "function" then
+        Print("test failed: Carbonite TomTom emulation is unavailable")
+        Print("enable Carbonite option 'Emulate TomTom' and reload the UI")
+        return
+    end
+
+    local mapID = GetCurrentMapAreaID and GetCurrentMapAreaID()
+    local x, y = GetPlayerMapPosition("player")
+
+    if not mapID or mapID <= 0 or not x or not y or (x == 0 and y == 0) then
+        Print("test failed: open the Carbonite map in a normal outdoor zone, then retry")
+        return
+    end
+
+    local testX = math.min(0.98, x + 0.015)
+    local testY = y
+    local title = "CQB TEST MARKER"
+
+    local ok, waypoint = pcall(TomTom.AddWaypoint, TomTom, mapID, testX, testY, {
+        title = title,
+        persistent = false,
+        minimap = true,
+        world = true,
+        crazy = false,
+    })
+
+    if not ok then
+        Print("test failed: " .. tostring(waypoint))
+        return
+    end
+
+    Bridge.testWaypoint = waypoint
+    Print(string.format(
+        "test marker requested at map=%d x=%.2f y=%.2f",
+        mapID,
+        testX * 100,
+        testY * 100
+    ))
+end
+
+local function RemoveCarboniteTestWaypoint()
+    if not Bridge.testWaypoint then
+        Print("no bridge test marker is currently tracked")
+        return
+    end
+
+    if TomTom and type(TomTom.RemoveWaypoint) == "function" then
+        local ok, err = pcall(TomTom.RemoveWaypoint, TomTom, Bridge.testWaypoint)
+        if not ok then
+            Print("clear failed: " .. tostring(err))
+            return
         end
     end
 
-    if Bridge.markerCount > shown then
-        Print(string.format("showing first %d markers; %d more cached", shown, Bridge.markerCount - shown))
-    end
+    Bridge.testWaypoint = nil
+    Print("test marker cleared")
 end
 
 local function SetDebug(enabled)
@@ -178,10 +217,14 @@ SlashCmdList.CARBONITEQUESTIEBRIDGE = function(message)
         SetDebug(false)
     elseif command == "scan" then
         ScanExistingQuestieMarkers()
+    elseif command == "test" then
+        CreateCarboniteTestWaypoint()
+    elseif command == "clear" then
+        RemoveCarboniteTestWaypoint()
     elseif command == "status" then
         Print("version " .. VERSION .. "; Questie hook " .. (Bridge.questieHookInstalled and "installed" or "not installed") .. "; cached markers " .. tostring(Bridge.markerCount) .. "; debug " .. (CarboniteQuestieBridgeDB.debug and "on" or "off"))
     else
-        Print("commands: /cqb status, /cqb scan, /cqb debug on, /cqb debug off")
+        Print("commands: /cqb status, /cqb scan, /cqb test, /cqb clear, /cqb debug on, /cqb debug off")
     end
 end
 
