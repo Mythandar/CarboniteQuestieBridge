@@ -2,6 +2,7 @@ local ADDON_NAME = ...
 
 local Bridge = CreateFrame("Frame")
 Bridge:RegisterEvent("ADDON_LOADED")
+Bridge:RegisterEvent("PLAYER_LOGIN")
 
 local function Print(message)
     DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99CQB|r: " .. tostring(message))
@@ -68,25 +69,21 @@ SlashCmdList.CARBONITEQUESTIEBRIDGE = function(message)
     elseif command == "debug off" then
         SetDebug(false)
     elseif command == "status" then
-        Print("version 0.1.0; Questie hook " .. (Bridge.questieHookInstalled and "installed" or "not installed") .. "; debug " .. (CarboniteQuestieBridgeDB.debug and "on" or "off"))
+        Print("version 0.1.1; Questie hook " .. (Bridge.questieHookInstalled and "installed" or "not installed") .. "; debug " .. (CarboniteQuestieBridgeDB.debug and "on" or "off"))
     else
         Print("commands: /cqb status, /cqb debug on, /cqb debug off")
     end
 end
 
 Bridge:SetScript("OnEvent", function(self, event, addonName)
-    if event ~= "ADDON_LOADED" then
-        return
-    end
-
-    if addonName == ADDON_NAME then
+    if event == "ADDON_LOADED" and addonName == ADDON_NAME then
         CarboniteQuestieBridgeDB = CarboniteQuestieBridgeDB or {}
         if CarboniteQuestieBridgeDB.debug == nil then
             CarboniteQuestieBridgeDB.debug = false
         end
     end
 
-    if addonName == ADDON_NAME or addonName == "Questie" then
+    if event == "ADDON_LOADED" or event == "PLAYER_LOGIN" then
         InstallQuestieHook()
     end
 end)
