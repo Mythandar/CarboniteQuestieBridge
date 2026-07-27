@@ -1,8 +1,8 @@
 ## Interface: 30300
 ## Title: Carbonite Questie Bridge
-## Notes: Bridges Questie's filtered quest markers to Carbonite.
+## Notes: Renders Questie's filtered quest markers on Carbonite maps.
 ## Author: Mythandar
-## Version: 0.2.1
+## Version: 0.3.0
 ## OptionalDeps: Carbonite, Questie, Questie-335
 ## SavedVariables: CarboniteQuestieBridgeDB
 
