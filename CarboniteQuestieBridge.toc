@@ -2,7 +2,7 @@
 ## Title: Carbonite Questie Bridge
 ## Notes: Renders Questie's filtered quest markers on Carbonite maps.
 ## Author: Mythandar
-## Version: 0.3.0
+## Version: 0.3.1
 ## OptionalDeps: Carbonite, Questie, Questie-335
 ## SavedVariables: CarboniteQuestieBridgeDB
 
