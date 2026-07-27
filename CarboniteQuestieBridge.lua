@@ -1,15 +1,34 @@
 local ADDON_NAME = ...
-local VERSION = "0.2.1"
+local VERSION = "0.3.0"
 
 local Bridge = CreateFrame("Frame")
 Bridge:RegisterEvent("ADDON_LOADED")
 Bridge:RegisterEvent("PLAYER_LOGIN")
 Bridge.markers = {}
 Bridge.markerCount = 0
-Bridge.testWaypoint = nil
+Bridge.areaToCarboniteMap = {}
+Bridge.carboniteNameIndex = nil
+Bridge.unresolvedAreas = {}
+Bridge.elapsed = 0
+Bridge.initialScanDone = false
+Bridge.drawCount = 0
+
+local ICON_TEXTURE = "Interface\\AddOns\\Carbonite\\Gfx\\Map\\IconExclaim"
 
 local function Print(message)
     DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99CQB|r: " .. tostring(message))
+end
+
+local function Trim(value)
+    return (tostring(value or ""):match("^%s*(.-)%s*$"))
+end
+
+local function NormalizeName(value)
+    value = string.lower(Trim(value))
+    value = value:gsub("|c%x%x%x%x%x%x%x%x", "")
+    value = value:gsub("|r", "")
+    value = value:gsub("[%p%s]", "")
+    return value
 end
 
 local function MarkerKey(data, areaID, x, y)
@@ -24,6 +43,10 @@ end
 
 local function CacheMarker(data, areaID, x, y)
     if not data or data.Type ~= "available" then
+        return false
+    end
+
+    if type(areaID) ~= "number" or type(x) ~= "number" or type(y) ~= "number" then
         return false
     end
 
@@ -52,11 +75,10 @@ local function DebugPrintMarker(data, areaID, x, y)
     end
 
     Print(string.format(
-        "Questie marker quest=%s starter=%s icon=%s type=%s area=%s x=%.2f y=%.2f",
+        "Questie marker quest=%s starter=%s icon=%s area=%s x=%.2f y=%.2f",
         tostring(data and data.Id or "?"),
         tostring(data and data.Name or "?"),
         tostring(data and data.Icon or "?"),
-        tostring(data and data.Type or "?"),
         tostring(areaID),
         tonumber(x) or 0,
         tonumber(y) or 0
@@ -74,6 +96,120 @@ local function GetQuestieMap()
     end
 
     return QuestieMap
+end
+
+local function GetAreaName(areaID)
+    if type(GetMapNameByID) == "function" then
+        local name = GetMapNameByID(areaID)
+        if name and name ~= "" then
+            return name
+        end
+    end
+
+    if QuestieCompat and QuestieCompat.C_Map and type(QuestieCompat.C_Map.GetAreaInfo) == "function" then
+        local name = QuestieCompat.C_Map.GetAreaInfo(areaID)
+        if name and name ~= "" then
+            return name
+        end
+    end
+
+    return nil
+end
+
+local function BuildCarboniteNameIndex()
+    if Bridge.carboniteNameIndex then
+        return Bridge.carboniteNameIndex
+    end
+
+    if not Nx or type(Nx.MITN) ~= "table" then
+        return nil
+    end
+
+    local index = {}
+    for mapID, name in pairs(Nx.MITN) do
+        if type(mapID) == "number" and type(name) == "string" then
+            local normalized = NormalizeName(name)
+            if normalized ~= "" and not index[normalized] then
+                index[normalized] = mapID
+            end
+        end
+    end
+
+    Bridge.carboniteNameIndex = index
+    return index
+end
+
+local function ResolveCarboniteMapID(areaID)
+    if Bridge.areaToCarboniteMap[areaID] ~= nil then
+        return Bridge.areaToCarboniteMap[areaID] or nil
+    end
+
+    local index = BuildCarboniteNameIndex()
+    local areaName = GetAreaName(areaID)
+    if not index or not areaName then
+        Bridge.areaToCarboniteMap[areaID] = false
+        Bridge.unresolvedAreas[areaID] = areaName or "unknown"
+        return nil
+    end
+
+    local normalized = NormalizeName(areaName)
+    local mapID = index[normalized]
+
+    if not mapID then
+        for carboniteName, candidateID in pairs(index) do
+            if carboniteName == normalized
+                or carboniteName:find(normalized, 1, true)
+                or normalized:find(carboniteName, 1, true) then
+                mapID = candidateID
+                break
+            end
+        end
+    end
+
+    Bridge.areaToCarboniteMap[areaID] = mapID or false
+    if not mapID then
+        Bridge.unresolvedAreas[areaID] = areaName
+    end
+    return mapID
+end
+
+local function DrawCarboniteQuestIcons(map)
+    if not CarboniteQuestieBridgeDB or not CarboniteQuestieBridgeDB.iconsEnabled then
+        return
+    end
+
+    if not map or type(map.GWP) ~= "function" or type(map.GIS) ~= "function" or type(map.CFW) ~= "function" then
+        return
+    end
+
+    local size = 16 * (map.INS or 1)
+    local drawn = 0
+
+    for _, marker in pairs(Bridge.markers) do
+        local carboniteMapID = ResolveCarboniteMapID(marker.areaID)
+        if carboniteMapID then
+            local wx, wy = map:GWP(carboniteMapID, marker.x, marker.y)
+            if wx and wy then
+                local frame = map:GIS(4)
+                if frame and map:CFW(frame, wx, wy, size, size, 0) then
+                    frame.NXType = 9800
+                    frame.NXData = marker
+                    frame.NxT = string.format(
+                        "|cff33ff99Questie Available Quest|r\n%s\nQuest ID: %s (%.1f %.1f)",
+                        tostring(marker.starter or "Unknown starter"),
+                        tostring(marker.questId or "?"),
+                        marker.x,
+                        marker.y
+                    )
+                    frame.tex:SetVertexColor(1, 1, 1, 1)
+                    frame.tex:SetTexture(ICON_TEXTURE)
+                    drawn = drawn + 1
+                end
+            end
+        end
+    end
+
+    Bridge.drawCount = drawn
 end
 
 local function InstallQuestieHook()
@@ -98,15 +234,37 @@ local function InstallQuestieHook()
     return true
 end
 
-local function ScanExistingQuestieMarkers()
+local function InstallCarboniteHook()
+    if Bridge.carboniteHookInstalled then
+        return true
+    end
+
+    if not Nx or not Nx.Que or type(Nx.Que.UpI) ~= "function" then
+        return false
+    end
+
+    hooksecurefunc(Nx.Que, "UpI", function(_, map)
+        DrawCarboniteQuestIcons(map)
+    end)
+
+    Bridge.carboniteHookInstalled = true
+    Print("Carbonite quest-icon hook installed.")
+    return true
+end
+
+local function ScanExistingQuestieMarkers(quiet)
     local QuestieMap = GetQuestieMap()
     if not QuestieMap or type(QuestieMap.questIdFrames) ~= "table" then
-        Print("scan failed: Questie map frames are not available")
-        return
+        if not quiet then
+            Print("scan failed: Questie map frames are not available")
+        end
+        return false
     end
 
     Bridge.markers = {}
     Bridge.markerCount = 0
+    Bridge.areaToCarboniteMap = {}
+    Bridge.unresolvedAreas = {}
 
     local questIds = {}
     local areas = {}
@@ -135,71 +293,17 @@ local function ScanExistingQuestieMarkers()
         areaCount = areaCount + 1
     end
 
-    Print(string.format(
-        "scan found %d available world-map markers across %d quests in %d areas",
-        Bridge.markerCount,
-        questCount,
-        areaCount
-    ))
-end
-
-local function CreateCarboniteTestWaypoint()
-    if not TomTom or type(TomTom.AddWaypoint) ~= "function" then
-        Print("test failed: Carbonite TomTom emulation is unavailable")
-        Print("enable Carbonite option 'Emulate TomTom' and reload the UI")
-        return
+    if not quiet then
+        Print(string.format(
+            "scan found %d available markers across %d quests in %d areas",
+            Bridge.markerCount,
+            questCount,
+            areaCount
+        ))
+        Print("move or reopen the Carbonite map to force a redraw")
     end
 
-    local mapID = GetCurrentMapAreaID and GetCurrentMapAreaID()
-    local x, y = GetPlayerMapPosition("player")
-
-    if not mapID or mapID <= 0 or not x or not y or (x == 0 and y == 0) then
-        Print("test failed: open the Carbonite map in a normal outdoor zone, then retry")
-        return
-    end
-
-    local testX = math.min(0.98, x + 0.015)
-    local testY = y
-    local title = "CQB TEST MARKER"
-
-    local ok, waypoint = pcall(TomTom.AddWaypoint, TomTom, mapID, testX, testY, {
-        title = title,
-        persistent = false,
-        minimap = true,
-        world = true,
-        crazy = false,
-    })
-
-    if not ok then
-        Print("test failed: " .. tostring(waypoint))
-        return
-    end
-
-    Bridge.testWaypoint = waypoint
-    Print(string.format(
-        "test marker requested at map=%d x=%.2f y=%.2f",
-        mapID,
-        testX * 100,
-        testY * 100
-    ))
-end
-
-local function RemoveCarboniteTestWaypoint()
-    if not Bridge.testWaypoint then
-        Print("no bridge test marker is currently tracked")
-        return
-    end
-
-    if TomTom and type(TomTom.RemoveWaypoint) == "function" then
-        local ok, err = pcall(TomTom.RemoveWaypoint, TomTom, Bridge.testWaypoint)
-        if not ok then
-            Print("clear failed: " .. tostring(err))
-            return
-        end
-    end
-
-    Bridge.testWaypoint = nil
-    Print("test marker cleared")
+    return true
 end
 
 local function SetDebug(enabled)
@@ -207,24 +311,55 @@ local function SetDebug(enabled)
     Print("debug logging " .. (CarboniteQuestieBridgeDB.debug and "enabled" or "disabled"))
 end
 
+local function SetIconsEnabled(enabled)
+    CarboniteQuestieBridgeDB.iconsEnabled = enabled and true or false
+    Print("Carbonite quest icons " .. (CarboniteQuestieBridgeDB.iconsEnabled and "enabled" or "disabled"))
+    Print("move or reopen the Carbonite map to force a redraw")
+end
+
+local function PrintUnresolvedAreas()
+    local count = 0
+    for areaID, name in pairs(Bridge.unresolvedAreas) do
+        Print(string.format("unresolved area %s: %s", tostring(areaID), tostring(name)))
+        count = count + 1
+        if count >= 20 then
+            break
+        end
+    end
+
+    if count == 0 then
+        Print("no unresolved Questie areas recorded")
+    end
+end
+
 SLASH_CARBONITEQUESTIEBRIDGE1 = "/cqb"
 SlashCmdList.CARBONITEQUESTIEBRIDGE = function(message)
-    local command = string.lower((message or ""):match("^%s*(.-)%s*$"))
+    local command = string.lower(Trim(message))
 
     if command == "debug on" then
         SetDebug(true)
     elseif command == "debug off" then
         SetDebug(false)
-    elseif command == "scan" then
-        ScanExistingQuestieMarkers()
-    elseif command == "test" then
-        CreateCarboniteTestWaypoint()
-    elseif command == "clear" then
-        RemoveCarboniteTestWaypoint()
+    elseif command == "icons on" then
+        SetIconsEnabled(true)
+    elseif command == "icons off" then
+        SetIconsEnabled(false)
+    elseif command == "scan" or command == "refresh" then
+        ScanExistingQuestieMarkers(false)
+    elseif command == "unresolved" then
+        PrintUnresolvedAreas()
     elseif command == "status" then
-        Print("version " .. VERSION .. "; Questie hook " .. (Bridge.questieHookInstalled and "installed" or "not installed") .. "; cached markers " .. tostring(Bridge.markerCount) .. "; debug " .. (CarboniteQuestieBridgeDB.debug and "on" or "off"))
+        Print(
+            "version " .. VERSION
+            .. "; Questie hook " .. (Bridge.questieHookInstalled and "installed" or "not installed")
+            .. "; Carbonite hook " .. (Bridge.carboniteHookInstalled and "installed" or "not installed")
+            .. "; cached markers " .. tostring(Bridge.markerCount)
+            .. "; last drawn " .. tostring(Bridge.drawCount)
+            .. "; icons " .. (CarboniteQuestieBridgeDB.iconsEnabled and "on" or "off")
+            .. "; debug " .. (CarboniteQuestieBridgeDB.debug and "on" or "off")
+        )
     else
-        Print("commands: /cqb status, /cqb scan, /cqb test, /cqb clear, /cqb debug on, /cqb debug off")
+        Print("commands: /cqb status, /cqb refresh, /cqb icons on, /cqb icons off, /cqb unresolved, /cqb debug on, /cqb debug off")
     end
 end
 
@@ -234,9 +369,30 @@ Bridge:SetScript("OnEvent", function(self, event, addonName)
         if CarboniteQuestieBridgeDB.debug == nil then
             CarboniteQuestieBridgeDB.debug = false
         end
+        if CarboniteQuestieBridgeDB.iconsEnabled == nil then
+            CarboniteQuestieBridgeDB.iconsEnabled = true
+        end
     end
 
     if event == "ADDON_LOADED" or event == "PLAYER_LOGIN" then
         InstallQuestieHook()
+        InstallCarboniteHook()
+    end
+end)
+
+Bridge:SetScript("OnUpdate", function(self, elapsed)
+    self.elapsed = self.elapsed + elapsed
+    if self.elapsed < 1 then
+        return
+    end
+    self.elapsed = 0
+
+    InstallQuestieHook()
+    InstallCarboniteHook()
+
+    if self.questieHookInstalled and not self.initialScanDone then
+        if ScanExistingQuestieMarkers(true) then
+            self.initialScanDone = true
+        end
     end
 end)
