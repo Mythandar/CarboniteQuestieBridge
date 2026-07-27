@@ -1,17 +1,18 @@
 local ADDON_NAME = ...
-local VERSION = "0.3.1"
+local VERSION = "0.4.0"
 
 local Bridge = CreateFrame("Frame")
 Bridge:RegisterEvent("ADDON_LOADED")
 Bridge:RegisterEvent("PLAYER_LOGIN")
 Bridge.markers = {}
 Bridge.markerCount = 0
-Bridge.areaToCarboniteMap = {}
+Bridge.uiMapToCarboniteMap = {}
 Bridge.carboniteNameIndex = nil
-Bridge.unresolvedAreas = {}
+Bridge.unresolvedMaps = {}
 Bridge.elapsed = 0
 Bridge.initialScanDone = false
 Bridge.drawCount = 0
+Bridge.mappedCount = 0
 
 local ICON_TEXTURE = "Interface\\AddOns\\Carbonite\\Gfx\\Map\\IconExclaim"
 
@@ -31,17 +32,61 @@ local function NormalizeName(value)
     return value
 end
 
-local function MarkerKey(data, areaID, x, y)
+local function GetQuestieModule(name)
+    if not QuestieLoader or type(QuestieLoader.ImportModule) ~= "function" then
+        return nil
+    end
+
+    local ok, module = pcall(QuestieLoader.ImportModule, QuestieLoader, name)
+    if not ok then
+        return nil
+    end
+
+    return module
+end
+
+local function GetQuestieMap()
+    return GetQuestieModule("QuestieMap")
+end
+
+local function GetQuestieZoneDB()
+    return GetQuestieModule("ZoneDB")
+end
+
+local function GetQuestieUiMapID(areaID)
+    local ZoneDB = GetQuestieZoneDB()
+    if ZoneDB and type(ZoneDB.GetUiMapIdByAreaId) == "function" then
+        return ZoneDB:GetUiMapIdByAreaId(areaID)
+    end
+    return nil
+end
+
+local function GetUiMapName(uiMapID)
+    local C_Map = QuestieCompat and QuestieCompat.C_Map
+    if not C_Map or type(C_Map.GetMapInfo) ~= "function" then
+        return nil
+    end
+
+    local ok, mapInfo = pcall(C_Map.GetMapInfo, uiMapID)
+    if not ok or type(mapInfo) ~= "table" then
+        return nil
+    end
+
+    return mapInfo.name
+end
+
+local function MarkerKey(data, areaID, uiMapID, x, y)
     return table.concat({
         tostring(data and data.Id or "?"),
         tostring(areaID or "?"),
+        tostring(uiMapID or "?"),
         string.format("%.3f", tonumber(x) or 0),
         string.format("%.3f", tonumber(y) or 0),
         tostring(data and data.Name or "?")
     }, ":")
 end
 
-local function CacheMarker(data, areaID, x, y)
+local function CacheMarker(data, areaID, uiMapID, x, y)
     if not data or data.Type ~= "available" then
         return false
     end
@@ -50,7 +95,9 @@ local function CacheMarker(data, areaID, x, y)
         return false
     end
 
-    local key = MarkerKey(data, areaID, x, y)
+    uiMapID = tonumber(uiMapID) or GetQuestieUiMapID(areaID)
+
+    local key = MarkerKey(data, areaID, uiMapID, x, y)
     if Bridge.markers[key] then
         return false
     end
@@ -62,6 +109,7 @@ local function CacheMarker(data, areaID, x, y)
         markerType = data.Type,
         questData = data.QuestData,
         areaID = areaID,
+        uiMapID = uiMapID,
         x = x,
         y = y,
     }
@@ -69,62 +117,32 @@ local function CacheMarker(data, areaID, x, y)
     return true
 end
 
-local function DebugPrintMarker(data, areaID, x, y)
+local function DebugPrintMarker(data, areaID, uiMapID, x, y)
     if not CarboniteQuestieBridgeDB or not CarboniteQuestieBridgeDB.debug then
         return
     end
 
     Print(string.format(
-        "Questie marker quest=%s starter=%s icon=%s area=%s x=%.2f y=%.2f",
+        "Questie marker quest=%s starter=%s icon=%s area=%s uiMap=%s x=%.2f y=%.2f",
         tostring(data and data.Id or "?"),
         tostring(data and data.Name or "?"),
         tostring(data and data.Icon or "?"),
         tostring(areaID),
+        tostring(uiMapID),
         tonumber(x) or 0,
         tonumber(y) or 0
     ))
 end
 
-local function GetQuestieMap()
-    if not QuestieLoader or not QuestieLoader.ImportModule then
-        return nil
+local function AddCarboniteName(index, name, mapID)
+    if type(name) ~= "string" or type(mapID) ~= "number" then
+        return
     end
 
-    local ok, QuestieMap = pcall(QuestieLoader.ImportModule, QuestieLoader, "QuestieMap")
-    if not ok then
-        return nil
+    local normalized = NormalizeName(name)
+    if normalized ~= "" and not index[normalized] then
+        index[normalized] = mapID
     end
-
-    return QuestieMap
-end
-
-local function GetAreaName(areaID)
-    if QuestieLoader and QuestieLoader.ImportModule then
-        local ok, ZoneDB = pcall(QuestieLoader.ImportModule, QuestieLoader, "ZoneDB")
-        if ok and ZoneDB then
-            if type(ZoneDB.GetAreaNameByAreaId) == "function" then
-                local name = ZoneDB:GetAreaNameByAreaId(areaID)
-                if name and name ~= "" then
-                    return name
-                end
-            end
-            if type(ZoneDB.GetAreaName) == "function" then
-                local name = ZoneDB:GetAreaName(areaID)
-                if name and name ~= "" then
-                    return name
-                end
-            end
-        end
-    end
-
-    if QuestieCompat and QuestieCompat.C_Map and type(QuestieCompat.C_Map.GetAreaInfo) == "function" then
-        local name = QuestieCompat.C_Map.GetAreaInfo(areaID)
-        if name and name ~= "" then
-            return name
-        end
-    end
-
-    return nil
 end
 
 local function BuildCarboniteNameIndex()
@@ -137,11 +155,18 @@ local function BuildCarboniteNameIndex()
     end
 
     local index = {}
+
+    -- Nx.MITN is Carbonite's authoritative mapID -> localized map name table.
     for mapID, name in pairs(Nx.MITN) do
-        if type(mapID) == "number" and type(name) == "string" then
-            local normalized = NormalizeName(name)
-            if normalized ~= "" and not index[normalized] then
-                index[normalized] = mapID
+        AddCarboniteName(index, name, mapID)
+    end
+
+    -- MWI keeps Carbonite's original English map names. Adding them makes the
+    -- bridge tolerant of localization differences without touching Carbonite.
+    if Nx.Map and type(Nx.Map.MWI) == "table" then
+        for mapID, mapData in pairs(Nx.Map.MWI) do
+            if type(mapData) == "table" then
+                AddCarboniteName(index, mapData.Nam, mapID)
             end
         end
     end
@@ -150,52 +175,38 @@ local function BuildCarboniteNameIndex()
     return index
 end
 
-local function ResolveCarboniteMapID(areaID)
-    if Bridge.areaToCarboniteMap[areaID] ~= nil then
-        return Bridge.areaToCarboniteMap[areaID] or nil
+local function ResolveCarboniteMapID(uiMapID, areaID)
+    local cacheKey = tonumber(uiMapID) or ("area:" .. tostring(areaID))
+    if Bridge.uiMapToCarboniteMap[cacheKey] ~= nil then
+        return Bridge.uiMapToCarboniteMap[cacheKey] or nil
     end
 
-    -- Carbonite's own quest renderer resolves its zone IDs through Nx.Map.NTMI.
-    -- Questie's AreaID values are the same legacy AreaTable IDs, so this is the
-    -- authoritative conversion and avoids trying to treat an AreaID as a map ID.
-    if Nx and Nx.Map and type(Nx.Map.NTMI) == "table" then
-        local directMapID = Nx.Map.NTMI[areaID]
-        if directMapID then
-            Bridge.areaToCarboniteMap[areaID] = directMapID
-            Bridge.unresolvedAreas[areaID] = nil
-            return directMapID
-        end
-    end
-
-    -- Fallback for unusual parent/sub-zone records that do not exist in NTMI.
     local index = BuildCarboniteNameIndex()
-    local areaName = GetAreaName(areaID)
-    if not index or not areaName then
-        Bridge.areaToCarboniteMap[areaID] = false
-        Bridge.unresolvedAreas[areaID] = areaName or "unknown"
+    local mapName = uiMapID and GetUiMapName(uiMapID) or nil
+
+    if not index or not mapName then
+        Bridge.uiMapToCarboniteMap[cacheKey] = false
+        Bridge.unresolvedMaps[cacheKey] = {
+            areaID = areaID,
+            uiMapID = uiMapID,
+            name = mapName or "unknown",
+        }
         return nil
     end
 
-    local normalized = NormalizeName(areaName)
-    local mapID = index[normalized]
+    local mapID = index[NormalizeName(mapName)]
 
-    if not mapID then
-        for carboniteName, candidateID in pairs(index) do
-            if carboniteName == normalized
-                or carboniteName:find(normalized, 1, true)
-                or normalized:find(carboniteName, 1, true) then
-                mapID = candidateID
-                break
-            end
-        end
-    end
-
-    Bridge.areaToCarboniteMap[areaID] = mapID or false
+    Bridge.uiMapToCarboniteMap[cacheKey] = mapID or false
     if mapID then
-        Bridge.unresolvedAreas[areaID] = nil
+        Bridge.unresolvedMaps[cacheKey] = nil
     else
-        Bridge.unresolvedAreas[areaID] = areaName
+        Bridge.unresolvedMaps[cacheKey] = {
+            areaID = areaID,
+            uiMapID = uiMapID,
+            name = mapName,
+        }
     end
+
     return mapID
 end
 
@@ -210,31 +221,32 @@ local function DrawCarboniteQuestIcons(map)
 
     local size = 16 * (map.INS or 1)
     local drawn = 0
+    local mapped = 0
 
     for _, marker in pairs(Bridge.markers) do
-        local carboniteMapID = ResolveCarboniteMapID(marker.areaID)
+        local carboniteMapID = ResolveCarboniteMapID(marker.uiMapID, marker.areaID)
         if carboniteMapID then
+            mapped = mapped + 1
             local wx, wy = map:GWP(carboniteMapID, marker.x, marker.y)
-            if wx and wy then
-                local frame = map:GIS(4)
-                if frame and map:CFW(frame, wx, wy, size, size, 0) then
-                    frame.NXType = 9800
-                    frame.NXData = marker
-                    frame.NxT = string.format(
-                        "|cff33ff99Questie Available Quest|r\n%s\nQuest ID: %s (%.1f %.1f)",
-                        tostring(marker.starter or "Unknown starter"),
-                        tostring(marker.questId or "?"),
-                        marker.x,
-                        marker.y
-                    )
-                    frame.tex:SetVertexColor(1, 1, 1, 1)
-                    frame.tex:SetTexture(ICON_TEXTURE)
-                    drawn = drawn + 1
-                end
+            local frame = map:GIS(4)
+            if frame and map:CFW(frame, wx, wy, size, size, 0) then
+                frame.NXType = 9800
+                frame.NXData = marker
+                frame.NxT = string.format(
+                    "|cff33ff99Questie Available Quest|r\n%s\nQuest ID: %s (%.1f %.1f)",
+                    tostring(marker.starter or "Unknown starter"),
+                    tostring(marker.questId or "?"),
+                    marker.x,
+                    marker.y
+                )
+                frame.tex:SetVertexColor(1, 1, 1, 1)
+                frame.tex:SetTexture(ICON_TEXTURE)
+                drawn = drawn + 1
             end
         end
     end
 
+    Bridge.mappedCount = mapped
     Bridge.drawCount = drawn
 end
 
@@ -250,13 +262,14 @@ local function InstallQuestieHook()
 
     hooksecurefunc(QuestieMap, "DrawWorldIcon", function(_, data, areaID, x, y)
         if data and data.Type == "available" then
-            CacheMarker(data, areaID, x, y)
-            DebugPrintMarker(data, areaID, x, y)
+            local uiMapID = GetQuestieUiMapID(areaID)
+            CacheMarker(data, areaID, uiMapID, x, y)
+            DebugPrintMarker(data, areaID, uiMapID, x, y)
         end
     end)
 
     Bridge.questieHookInstalled = true
-    Print("Questie marker hook installed.")
+    Print("Questie-335 marker hook installed.")
     return true
 end
 
@@ -282,15 +295,18 @@ local function ScanExistingQuestieMarkers(quiet)
     local QuestieMap = GetQuestieMap()
     if not QuestieMap or type(QuestieMap.questIdFrames) ~= "table" then
         if not quiet then
-            Print("scan failed: Questie map frames are not available")
+            Print("scan failed: Questie-335 map frames are not available")
         end
         return false
     end
 
     Bridge.markers = {}
     Bridge.markerCount = 0
-    Bridge.areaToCarboniteMap = {}
-    Bridge.unresolvedAreas = {}
+    Bridge.uiMapToCarboniteMap = {}
+    Bridge.carboniteNameIndex = nil
+    Bridge.unresolvedMaps = {}
+    Bridge.drawCount = 0
+    Bridge.mappedCount = 0
 
     local questIds = {}
     local areas = {}
@@ -300,7 +316,8 @@ local function ScanExistingQuestieMarkers(quiet)
             for frameName in pairs(frameNames) do
                 local frame = _G[frameName]
                 if frame and frame.data and frame.data.Type == "available" and not frame.miniMapIcon then
-                    if CacheMarker(frame.data, frame.AreaID, frame.x, frame.y) then
+                    local uiMapID = frame.UiMapID or GetQuestieUiMapID(frame.AreaID)
+                    if CacheMarker(frame.data, frame.AreaID, uiMapID, frame.x, frame.y) then
                         questIds[questId] = true
                         areas[frame.AreaID or "?"] = true
                     end
@@ -343,10 +360,15 @@ local function SetIconsEnabled(enabled)
     Print("move or reopen the Carbonite map to force a redraw")
 end
 
-local function PrintUnresolvedAreas()
+local function PrintUnresolvedMaps()
     local count = 0
-    for areaID, name in pairs(Bridge.unresolvedAreas) do
-        Print(string.format("unresolved area %s: %s", tostring(areaID), tostring(name)))
+    for _, info in pairs(Bridge.unresolvedMaps) do
+        Print(string.format(
+            "unresolved map area=%s uiMap=%s name=%s",
+            tostring(info.areaID),
+            tostring(info.uiMapID),
+            tostring(info.name)
+        ))
         count = count + 1
         if count >= 20 then
             break
@@ -354,7 +376,7 @@ local function PrintUnresolvedAreas()
     end
 
     if count == 0 then
-        Print("no unresolved Questie areas recorded")
+        Print("no unresolved Questie-335 maps recorded")
     end
 end
 
@@ -373,13 +395,14 @@ SlashCmdList.CARBONITEQUESTIEBRIDGE = function(message)
     elseif command == "scan" or command == "refresh" then
         ScanExistingQuestieMarkers(false)
     elseif command == "unresolved" then
-        PrintUnresolvedAreas()
+        PrintUnresolvedMaps()
     elseif command == "status" then
         Print(
             "version " .. VERSION
-            .. "; Questie hook " .. (Bridge.questieHookInstalled and "installed" or "not installed")
+            .. "; Questie-335 hook " .. (Bridge.questieHookInstalled and "installed" or "not installed")
             .. "; Carbonite hook " .. (Bridge.carboniteHookInstalled and "installed" or "not installed")
             .. "; cached markers " .. tostring(Bridge.markerCount)
+            .. "; mapped " .. tostring(Bridge.mappedCount)
             .. "; last drawn " .. tostring(Bridge.drawCount)
             .. "; icons " .. (CarboniteQuestieBridgeDB.iconsEnabled and "on" or "off")
             .. "; debug " .. (CarboniteQuestieBridgeDB.debug and "on" or "off")
