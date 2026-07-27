@@ -1,5 +1,5 @@
 local ADDON_NAME = ...
-local VERSION = "0.5.0"
+local VERSION = "0.7.0"
 
 local Bridge = CreateFrame("Frame")
 Bridge:RegisterEvent("ADDON_LOADED")
@@ -16,6 +16,8 @@ Bridge.drawCount = 0
 Bridge.mappedCount = 0
 Bridge.activeFrames = {}
 Bridge.activeMap = nil
+Bridge.nativeQuestFrames = {}
+Bridge.originalUpI = nil
 
 local ICON_TEXTURE = "Interface\\AddOns\\Carbonite\\Gfx\\Map\\IconExclaim"
 
@@ -268,6 +270,18 @@ local function ApplyActiveFrameAlpha()
     end
 end
 
+local function HideNativeQuestFrames()
+    for _, frame in ipairs(Bridge.nativeQuestFrames) do
+        if frame then
+            frame:Hide()
+            frame.NXType = nil
+            frame.NXData = nil
+            frame.NxT = nil
+        end
+    end
+    Bridge.nativeQuestFrames = {}
+end
+
 local function DrawCarboniteQuestIcons(map)
     Bridge.activeFrames = {}
     Bridge.activeMap = map
@@ -349,12 +363,43 @@ local function InstallCarboniteHook()
         return false
     end
 
-    hooksecurefunc(Nx.Que, "UpI", function(_, map)
+    Bridge.originalUpI = Nx.Que.UpI
+    Nx.Que.UpI = function(self, map, ...)
+        HideNativeQuestFrames()
+
+        local captured = {}
+        local originalGIS = map and map.GIS
+        if map and type(originalGIS) == "function" then
+            map.GIS = function(mapSelf, pool, ...)
+                local frame = originalGIS(mapSelf, pool, ...)
+                if frame then
+                    captured[#captured + 1] = frame
+                end
+                return frame
+            end
+        end
+
+        local ok, err = pcall(Bridge.originalUpI, self, map, ...)
+
+        if map and originalGIS then
+            map.GIS = originalGIS
+        end
+
+        if not ok then
+            Print("Carbonite quest update error: " .. tostring(err))
+            return
+        end
+
+        if CarboniteQuestieBridgeDB and CarboniteQuestieBridgeDB.suppressCarboniteQuests then
+            Bridge.nativeQuestFrames = captured
+            HideNativeQuestFrames()
+        end
+
         DrawCarboniteQuestIcons(map)
-    end)
+    end
 
     Bridge.carboniteHookInstalled = true
-    Print("Carbonite quest-icon hook installed.")
+    Print("Carbonite quest-icon replacement installed.")
     return true
 end
 
@@ -422,6 +467,15 @@ local function SetIconsEnabled(enabled)
     Print("move or reopen the Carbonite map to force a redraw")
 end
 
+local function SetNativeSuppression(enabled)
+    CarboniteQuestieBridgeDB.suppressCarboniteQuests = enabled and true or false
+    if enabled then
+        HideNativeQuestFrames()
+    end
+    Print("Carbonite native quest markers " .. (enabled and "suppressed" or "enabled"))
+    Print("move or reopen the Carbonite map to force a redraw")
+end
+
 local function PrintUnresolvedMaps()
     local count = 0
     for _, info in pairs(Bridge.unresolvedMaps) do
@@ -451,6 +505,10 @@ SlashCmdList.CARBONITEQUESTIEBRIDGE = function(message)
         SetIconsEnabled(true)
     elseif command == "icons off" then
         SetIconsEnabled(false)
+    elseif command == "native off" then
+        SetNativeSuppression(true)
+    elseif command == "native on" then
+        SetNativeSuppression(false)
     elseif command == "scan" or command == "refresh" then
         ScanExistingQuestieMarkers(false)
     elseif command == "unresolved" then
@@ -459,16 +517,16 @@ SlashCmdList.CARBONITEQUESTIEBRIDGE = function(message)
         Print(
             "version " .. VERSION
             .. "; Questie-335 hook " .. (Bridge.questieHookInstalled and "installed" or "not installed")
-            .. "; Carbonite hook " .. (Bridge.carboniteHookInstalled and "installed" or "not installed")
+            .. "; Carbonite replacement " .. (Bridge.carboniteHookInstalled and "installed" or "not installed")
             .. "; cached markers " .. tostring(Bridge.markerCount)
             .. "; mapped " .. tostring(Bridge.mappedCount)
             .. "; last drawn " .. tostring(Bridge.drawCount)
             .. "; icons " .. (CarboniteQuestieBridgeDB.iconsEnabled and "on" or "off")
-            .. "; styles on"
+            .. "; native quests " .. (CarboniteQuestieBridgeDB.suppressCarboniteQuests and "off" or "on")
             .. "; debug " .. (CarboniteQuestieBridgeDB.debug and "on" or "off")
         )
     else
-        Print("commands: /cqb status, /cqb refresh, /cqb icons on, /cqb icons off, /cqb unresolved, /cqb debug on, /cqb debug off")
+        Print("commands: /cqb status, /cqb refresh, /cqb icons on, /cqb icons off, /cqb native off, /cqb native on, /cqb unresolved, /cqb debug on, /cqb debug off")
     end
 end
 
@@ -480,6 +538,9 @@ Bridge:SetScript("OnEvent", function(self, event, addonName)
         end
         if CarboniteQuestieBridgeDB.iconsEnabled == nil then
             CarboniteQuestieBridgeDB.iconsEnabled = true
+        end
+        if CarboniteQuestieBridgeDB.suppressCarboniteQuests == nil then
+            CarboniteQuestieBridgeDB.suppressCarboniteQuests = true
         end
     end
 
