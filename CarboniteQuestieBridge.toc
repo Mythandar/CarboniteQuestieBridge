@@ -1,0 +1,9 @@
+## Interface: 30300
+## Title: Carbonite Questie Bridge
+## Notes: Bridges Questie's filtered quest markers to Carbonite.
+## Author: Mythandar
+## Version: 0.1.0
+## Dependencies: Carbonite, Questie
+## SavedVariables: CarboniteQuestieBridgeDB
+
+CarboniteQuestieBridge.lua
