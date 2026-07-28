@@ -2,11 +2,14 @@ local ADDON_NAME = ...
 local Bridge = CreateFrame("Frame")
 Bridge.elapsed = 0
 Bridge.registered = false
-Bridge.enabled = true
+Bridge.menuInstalled = false
+Bridge.preparationInstalled = false
 Bridge.mapNameIndex = nil
 Bridge.mapCache = {}
 Bridge.markerCount = 0
 Bridge.unresolvedCount = 0
+Bridge.lastTrackedQuestId = nil
+Bridge.originalTrack = nil
 
 local function Print(message)
     DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99CQB|r: " .. tostring(message))
@@ -14,6 +17,13 @@ end
 
 local function Version()
     return GetAddOnMetadata(ADDON_NAME or "CarboniteQuestieBridge", "Version") or "unknown"
+end
+
+local function Settings()
+    CarboniteQuestieBridgeDB = CarboniteQuestieBridgeDB or {}
+    if CarboniteQuestieBridgeDB.iconsEnabled == nil then CarboniteQuestieBridgeDB.iconsEnabled = true end
+    if CarboniteQuestieBridgeDB.nativeQuestGivers == nil then CarboniteQuestieBridgeDB.nativeQuestGivers = false end
+    return CarboniteQuestieBridgeDB
 end
 
 local function Normalize(value)
@@ -31,15 +41,17 @@ local function GetQuestieAPI()
     end
 end
 
+local function GetCarboniteAPI()
+    return type(_G.CarboniteExternalMarkerAPI) == "table" and _G.CarboniteExternalMarkerAPI or nil
+end
+
 local function BuildMapIndex()
     if Bridge.mapNameIndex then return Bridge.mapNameIndex end
     if not Nx then return nil end
     local index = {}
     if type(Nx.MITN) == "table" then
         for id, name in pairs(Nx.MITN) do
-            if type(id) == "number" and type(name) == "string" then
-                index[Normalize(name)] = id
-            end
+            if type(id) == "number" and type(name) == "string" then index[Normalize(name)] = id end
         end
     end
     if Nx.Map and type(Nx.Map.MWI) == "table" then
@@ -82,13 +94,14 @@ local function ResolveMap(uiMapId)
     return id
 end
 
-local Provider = { enabled = true }
+local Provider = {}
 
 function Provider:GetMarkers()
+    local settings = Settings()
     local api = GetQuestieAPI()
     local output = {}
     Bridge.unresolvedCount = 0
-    if not Bridge.enabled or not api or type(api.GetAvailableQuestMarkers) ~= "function" then
+    if not settings.iconsEnabled or not api or type(api.GetAvailableQuestMarkers) ~= "function" then
         Bridge.markerCount = 0
         return output
     end
@@ -130,30 +143,90 @@ function Provider:GetStyle(marker)
     return { r = r, g = g, b = b, scale = 1 }
 end
 
-local function Refresh()
-    local api = _G.CarboniteExternalMarkerAPI
-    if api and type(api.RefreshExternalMarkers) == "function" then
-        api:RefreshExternalMarkers("Questie")
+function Provider:OnAction(action, marker, carbonite)
+    if action ~= "TRACK" and action ~= "GOTO" then return nil end
+    local ok = carbonite:SetExternalTarget("Questie", marker)
+    if ok then
+        Bridge.lastTrackedQuestId = tonumber(marker.questId)
+        Print("tracking Questie quest giver: " .. tostring(marker.title or marker.giverName or marker.questId))
     end
+    return ok
+end
+
+local function Refresh()
+    local api = GetCarboniteAPI()
+    if api and type(api.RefreshExternalMarkers) == "function" then
+        return api:RefreshExternalMarkers("Questie")
+    end
+    return false
 end
 
 local function MarkerListener(event)
     if event == "RESET" then Refresh() end
 end
 
-local function Register()
-    if Bridge.registered then return true end
-    local questie = GetQuestieAPI()
-    local carbonite = _G.CarboniteExternalMarkerAPI
-    if not questie or not carbonite or type(carbonite.RegisterExternalMarkerProvider) ~= "function" then
+local function TrackSelectedMarker(que)
+    local marker = que and que.IMC
+    local providerName = marker and marker.NxExternalProvider or "Questie"
+    local carbonite = GetCarboniteAPI()
+    if marker and marker.questId and carbonite and type(carbonite.DispatchExternalMarkerAction) == "function" then
+        if carbonite:DispatchExternalMarkerAction(providerName, "TRACK", marker) then return end
+    end
+    if Bridge.originalTrack then return Bridge.originalTrack(que) end
+end
+
+local function InstallMenu()
+    if Bridge.menuInstalled then return true end
+    if not Nx or not Nx.Que or not Nx.Men then return false end
+    local que = Nx.Que
+    if not que.Map or not que.Map.Frm or type(Nx.Men.Cre) ~= "function"
+        or type(que.M_OSQ) ~= "function" or type(que.M_OW1) ~= "function" or not que.Map.M_OAN
+    then
         return false
     end
 
-    carbonite:RegisterExternalMarkerProvider("Questie", Provider)
-    carbonite:SetNativeAvailableQuestGiversEnabled(false)
-    if type(questie.RegisterMarkerListener) == "function" then
-        questie:RegisterMarkerListener(MarkerListener)
+    Bridge.originalTrack = Bridge.originalTrack or que.M_OT1
+    local men = Nx.Men:Cre(que.Map.Frm)
+    que.IcM = men
+    men:AdI1(0, "Track", TrackSelectedMarker, que)
+    men:AdI1(0, "Show Quest Log", que.M_OSQ, que)
+    que.IMIW = men:AdI1(0, "Watch", que.M_OW1, que)
+    men:AdI1(0, "Add Note", que.Map.M_OAN, que.Map)
+    Bridge.menuInstalled = true
+    return true
+end
+
+local function InstallPreparationHook()
+    if Bridge.preparationInstalled then return true end
+    if not Nx or not Nx.Que or type(Nx.Que.IOMD) ~= "function" then return false end
+    local originalIOMD = Nx.Que.IOMD
+    Nx.Que.IOMD = function(self, ...)
+        local frame = self and self.IHC
+        local marker = frame and frame.NXData
+        if marker and marker.questId then
+            marker.QId = tonumber(marker.questId)
+            marker.QI = 0
+            marker.NxExternalProvider = frame.NxExternalProvider or "Questie"
+            self.IHOI = 0
+            self.IMOI = 0
+        end
+        return originalIOMD(self, ...)
     end
+    Bridge.preparationInstalled = true
+    return true
+end
+
+local function Register()
+    if Bridge.registered then return true end
+    local questie = GetQuestieAPI()
+    local carbonite = GetCarboniteAPI()
+    if not questie or not carbonite or type(carbonite.RegisterExternalMarkerProvider) ~= "function" then return false end
+    if type(questie.GetAPIVersion) ~= "function" or questie:GetAPIVersion() < 1 then return false end
+    if type(carbonite.GetAPIVersion) ~= "function" or carbonite:GetAPIVersion() < 1 then return false end
+
+    carbonite:RegisterExternalMarkerProvider("Questie", Provider)
+    carbonite:SetNativeAvailableQuestGiversEnabled(Settings().nativeQuestGivers)
+    if type(questie.RegisterMarkerListener) == "function" then questie:RegisterMarkerListener(MarkerListener) end
     Bridge.registered = true
     Print("formal Questie/Carbonite integration " .. Version() .. " registered")
     Refresh()
@@ -163,35 +236,39 @@ end
 SLASH_CARBONITEQUESTIEBRIDGE1 = "/cqb"
 SlashCmdList.CARBONITEQUESTIEBRIDGE = function(message)
     local command = string.lower((tostring(message or ""):match("^%s*(.-)%s*$")))
-    local carbonite = _G.CarboniteExternalMarkerAPI
+    local settings = Settings()
+    local carbonite = GetCarboniteAPI()
     if command == "refresh" or command == "scan" then
         Bridge.mapCache = {}
         Bridge.mapNameIndex = nil
         Refresh()
         Print("external markers refreshed")
     elseif command == "icons on" then
-        Bridge.enabled = true
-        Provider.enabled = true
+        settings.iconsEnabled = true
         Refresh()
     elseif command == "icons off" then
-        Bridge.enabled = false
-        Provider.enabled = false
+        settings.iconsEnabled = false
         Refresh()
     elseif command == "native on" then
+        settings.nativeQuestGivers = true
         if carbonite then carbonite:SetNativeAvailableQuestGiversEnabled(true) end
         Print("Carbonite native available quests enabled; reopen or move the map")
     elseif command == "native off" then
+        settings.nativeQuestGivers = false
         if carbonite then carbonite:SetNativeAvailableQuestGiversEnabled(false) end
         Print("Carbonite native available quests suppressed; reopen or move the map")
     elseif command == "status" then
+        local questie = GetQuestieAPI()
         Print(string.format(
-            "version %s; formal API %s; markers %d; unresolved %d; icons %s; native quests %s",
+            "version %s; registered %s; Questie API %s; Carbonite API %s; markers %d; unresolved %d; icons %s; native quests %s",
             Version(),
-            Bridge.registered and "registered" or "waiting",
+            Bridge.registered and "yes" or "waiting",
+            questie and questie.GetAPIVersion and questie:GetAPIVersion() or "missing",
+            carbonite and carbonite.GetAPIVersion and carbonite:GetAPIVersion() or "missing",
             Bridge.markerCount,
             Bridge.unresolvedCount,
-            Bridge.enabled and "on" or "off",
-            carbonite and carbonite:IsNativeAvailableQuestGiversEnabled() and "on" or "off"
+            settings.iconsEnabled and "on" or "off",
+            settings.nativeQuestGivers and "on" or "off"
         ))
     else
         Print("commands: /cqb status, /cqb refresh, /cqb icons on|off, /cqb native on|off")
@@ -200,10 +277,12 @@ end
 
 Bridge:SetScript("OnUpdate", function(self, elapsed)
     self.elapsed = self.elapsed + elapsed
-    if self.elapsed >= .5 then
-        self.elapsed = 0
-        Register()
-    end
+    if self.elapsed < .5 then return end
+    self.elapsed = 0
+    Settings()
+    Register()
+    InstallPreparationHook()
+    InstallMenu()
 end)
 
 _G.CarboniteQuestieBridge = Bridge
