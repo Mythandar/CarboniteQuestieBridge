@@ -2,7 +2,7 @@
 ## Title: Carbonite Questie Bridge
 ## Notes: Supported Questie marker integration for Carbonite maps.
 ## Author: Mythandar
-## Version: 1.0.0
+## Version: 1.0.1
 ## OptionalDeps: Carbonite, Questie-335
 ## SavedVariables: CarboniteQuestieBridgeDB
 
