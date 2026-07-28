@@ -1,10 +1,37 @@
+local VERSION = "0.8.5"
+
 local Compat = CreateFrame("Frame")
 Compat.elapsed = 0
 Compat.installed = false
-Compat.originalTrack = nil
+Compat.originalIOMD = nil
+Compat.lastPreparedQuestId = nil
 
 local function Print(message)
     DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99CQB|r: " .. tostring(message))
+end
+
+local function PrepareSelectedMarker(self)
+    local cur = self and self.IHC
+    if not cur or not cur.questId then
+        return true
+    end
+
+    local questId = tonumber(cur.questId)
+    if not questId then
+        Print("Track compatibility: Questie marker has no numeric quest ID")
+        return false
+    end
+
+    -- Carbonite's existing map-icon menu stores the original Track callback
+    -- when Carbonite initializes. Replacing M_OT1 later does not change that
+    -- stored callback. Prepare the selected marker before IOMD opens the menu.
+    cur.QId = questId
+    cur.QI = 0
+    self.IHOI = 0
+    self.IMOI = 0
+    Compat.lastPreparedQuestId = questId
+
+    return true
 end
 
 local function Install()
@@ -12,44 +39,20 @@ local function Install()
         return true
     end
 
-    if not Nx or not Nx.Que or type(Nx.Que.M_OT1) ~= "function" then
+    if not Nx or not Nx.Que or type(Nx.Que.IOMD) ~= "function" then
         return false
     end
 
-    Compat.originalTrack = Nx.Que.M_OT1
+    Compat.originalIOMD = Nx.Que.IOMD
 
-    Nx.Que.M_OT1 = function(self, ...)
-        local cur = self and self.IMC
-
-        -- Bridge markers use questId, while Carbonite's Track handler expects
-        -- QId and an objective index. Carbonite derives IMOI from NXType;
-        -- bridge icons use a private NXType, so force the quest-starter index.
-        if cur and cur.questId then
-            local questId = tonumber(cur.questId)
-            if not questId then
-                Print("Track failed: Questie marker has no numeric quest ID")
-                return
-            end
-
-            cur.QId = questId
-            cur.QI = 0
-            self.IMOI = 0
-
-            -- Carbonite can only place a quest into its watch system when its
-            -- own database contains that quest. Avoid a later nil-table error
-            -- and leave Goto available for Questie-only quests.
-            if type(self.ITQ) ~= "table" or not self.ITQ[questId] then
-                Print("Track unavailable: quest " .. questId .. " is not in Carbonite's quest database; use Goto instead")
-                return
-            end
-        end
-
-        return Compat.originalTrack(self, ...)
+    Nx.Que.IOMD = function(self, frm, ...)
+        PrepareSelectedMarker(self)
+        return Compat.originalIOMD(self, frm, ...)
     end
 
     Compat.installed = true
     _G.CQBTrackCompat = Compat
-    Print("Questie marker Track compatibility 0.8.4 installed.")
+    Print("Questie marker Track compatibility " .. VERSION .. " installed.")
     return true
 end
 
