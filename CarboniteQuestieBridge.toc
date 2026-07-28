@@ -1,12 +1,10 @@
 ## Interface: 30300
 ## Title: Carbonite Questie Bridge
-## Notes: Renders Questie-335 filtered quest markers on Carbonite maps.
+## Notes: Supported Questie marker integration for Carbonite maps.
 ## Author: Mythandar
-## Version: 0.8.6
+## Version: 1.0.0
 ## OptionalDeps: Carbonite, Questie-335
 ## SavedVariables: CarboniteQuestieBridgeDB
 
-CarboniteQuestieBridge.lua
-SuppressNativeQuestGivers.lua
+FormalIntegration.lua
 QuestieTrackCompat.lua
-SmartStyles.lua
