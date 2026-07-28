@@ -2,9 +2,8 @@
 ## Title: Carbonite Questie Bridge
 ## Notes: Supported Questie marker integration for Carbonite maps.
 ## Author: Mythandar
-## Version: 1.0.1
+## Version: 1.1.0
 ## OptionalDeps: Carbonite, Questie-335
 ## SavedVariables: CarboniteQuestieBridgeDB
 
 FormalIntegration.lua
-QuestieTrackCompat.lua
