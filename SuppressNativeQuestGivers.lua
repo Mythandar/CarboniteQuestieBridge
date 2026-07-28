@@ -1,12 +1,11 @@
-local VERSION = "0.8.2"
+local VERSION = "0.8.3"
 
 local Suppressor = CreateFrame("Frame")
 Suppressor.elapsed = 0
 Suppressor.installed = false
 Suppressor.originalUMI1 = nil
-Suppressor.lastEnabled = nil
 Suppressor.lastRemoved = 0
-Suppressor.rebuildCount = 0
+Suppressor.updateCount = 0
 
 local function Print(message)
     DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99CQB|r: " .. tostring(message))
@@ -51,26 +50,6 @@ local function RestoreQuestGiverSelections(gui, removed)
     end
 end
 
-local function RebuildGuideIcons()
-    if not Suppressor.installed
-        or not Nx
-        or not Nx.Map
-        or not Nx.Map.Gui
-        or type(Nx.Map.Gui.UMI1) ~= "function"
-    then
-        return false
-    end
-
-    local ok, err = pcall(Nx.Map.Gui.UMI1, Nx.Map.Gui)
-    if not ok then
-        Print("Guide rebuild error: " .. tostring(err))
-        return false
-    end
-
-    Suppressor.rebuildCount = Suppressor.rebuildCount + 1
-    return true
-end
-
 local function Install()
     if Suppressor.installed then
         return true
@@ -92,6 +71,7 @@ local function Install()
 
         local results = { pcall(Suppressor.originalUMI1, self, ...) }
 
+        -- Always restore Carbonite's Guide selections, even if its renderer errors.
         RestoreQuestGiverSelections(self, removed)
 
         local ok = table.remove(results, 1)
@@ -100,19 +80,13 @@ local function Install()
             return
         end
 
+        Suppressor.updateCount = Suppressor.updateCount + 1
         return unpack(results)
     end
 
     Suppressor.installed = true
-    Suppressor.lastEnabled = IsSuppressionEnabled() and true or false
-
     _G.CQBGuideSuppressor = Suppressor
-
     Print("Carbonite Guide quest-giver suppression " .. VERSION .. " installed.")
-
-    -- Rebuild once immediately so any !GQ/!GQC records created before the
-    -- wrapper was installed are replaced by a clean Guide render.
-    RebuildGuideIcons()
     return true
 end
 
@@ -124,15 +98,5 @@ Suppressor:SetScript("OnUpdate", function(self, elapsed)
         return
     end
     self.elapsed = 0
-
-    if not Install() then
-        return
-    end
-
-    local enabled = IsSuppressionEnabled() and true or false
-    if enabled ~= self.lastEnabled then
-        self.lastEnabled = enabled
-        RebuildGuideIcons()
-        Print("Carbonite native Guide quest givers " .. (enabled and "suppressed" or "enabled"))
-    end
+    Install()
 end)
