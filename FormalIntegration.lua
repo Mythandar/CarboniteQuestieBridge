@@ -2,6 +2,7 @@ local ADDON_NAME = ...
 local Bridge = CreateFrame("Frame")
 Bridge.elapsed = 0
 Bridge.registered = false
+Bridge.layerRegistered = false
 Bridge.menuInstalled = false
 Bridge.preparationInstalled = false
 Bridge.mapNameIndex = nil
@@ -41,6 +42,12 @@ local function GetQuestieAPI()
     end
 end
 
+local function GetQuestieModule(name)
+    if not QuestieLoader or type(QuestieLoader.ImportModule) ~= "function" then return nil end
+    local ok, module = pcall(QuestieLoader.ImportModule, QuestieLoader, name)
+    return ok and module or nil
+end
+
 local function GetCarboniteAPI()
     return type(_G.CarboniteExternalMarkerAPI) == "table" and _G.CarboniteExternalMarkerAPI or nil
 end
@@ -66,10 +73,10 @@ local function BuildMapIndex()
 end
 
 local EXPLICIT_MAPS = {
-    [1453] = 2020, -- Stormwind City
-    [1436] = 2027, -- Westfall
-    [1457] = 1006, -- Darnassus
-    [1438] = 1018, -- Teldrassil
+    [1453] = 2020,
+    [1436] = 2027,
+    [1457] = 1006,
+    [1438] = 1018,
 }
 
 local function ResolveMap(uiMapId)
@@ -92,6 +99,40 @@ local function ResolveMap(uiMapId)
     local id = index and mapName and index[Normalize(mapName)] or nil
     Bridge.mapCache[uiMapId] = id or false
     return id
+end
+
+local function SafeQuestType(functionName, questId)
+    local db = GetQuestieModule("QuestieDB")
+    local func = db and db[functionName]
+    if type(func) ~= "function" then return false end
+    local ok, result = pcall(func, questId)
+    return ok and result and true or false
+end
+
+local function QuestTypeText(marker)
+    local types = {}
+    local questId = tonumber(marker.questId)
+    if marker.daily or SafeQuestType("IsDailyQuest", questId) then types[#types + 1] = "Daily" end
+    if marker.repeatable then types[#types + 1] = "Repeatable" end
+    if marker.elite or tonumber(marker.groupSize or marker.suggestedGroup or 0) > 1 then types[#types + 1] = "Elite" end
+    if SafeQuestType("IsDungeonQuest", questId) then types[#types + 1] = "Dungeon" end
+    if SafeQuestType("IsRaidQuest", questId) then types[#types + 1] = "Raid" end
+    if #types == 0 then types[1] = "Normal" end
+    return table.concat(types, ", ")
+end
+
+local function DifficultyHex(level)
+    level = tonumber(level) or UnitLevel("player") or 1
+    if type(GetQuestDifficultyColor) == "function" then
+        local colour = GetQuestDifficultyColor(level)
+        if colour then
+            local r = math.floor((colour.r or 1) * 255 + .5)
+            local g = math.floor((colour.g or .82) * 255 + .5)
+            local b = math.floor((colour.b or 0) * 255 + .5)
+            return string.format("%02x%02x%02x", r, g, b)
+        end
+    end
+    return "ffd100"
 end
 
 local Provider = {}
@@ -122,11 +163,23 @@ end
 
 function Provider:GetTooltip(marker)
     local level = marker.level or marker.requiredLevel or "?"
+    local title = tostring(marker.title or "Unknown quest")
+    local giver = tostring(marker.giverName or marker.starter or "Unknown")
+    local typeText = QuestTypeText(marker)
+    local coordinates = ""
+    if tonumber(marker.x) and tonumber(marker.y) then
+        coordinates = string.format("\n|cff9d9d9dLocation: %.1f, %.1f|r", tonumber(marker.x), tonumber(marker.y))
+    end
+
     return string.format(
-        "|cff33ff99Questie Available Quest|r\n%s\nQuest giver: %s\nLevel %s\nQuest ID: %s",
-        tostring(marker.title or "Unknown quest"),
-        tostring(marker.giverName or "Unknown"),
+        "|cff33ff99Questie Available Quest|r\n|cff%s%s|r\n|cffffffff%s|r\n\n|cffffd100Level %s|r  |cffb0b0b0%s|r\n|cffc0c0c0Quest giver:|r %s%s\n|cff707070Quest ID: %s|r",
+        DifficultyHex(level),
+        title,
+        marker.objectiveText or marker.description or "Available from this quest giver",
         tostring(level),
+        typeText,
+        giver,
+        coordinates,
         tostring(marker.questId or "?")
     )
 end
@@ -163,6 +216,43 @@ end
 
 local function MarkerListener(event)
     if event == "RESET" then Refresh() end
+end
+
+local function RegisterLayerProvider()
+    if Bridge.layerRegistered then return true end
+    local poi = _G.CarbonitePOI
+    if not poi or type(poi.RegisterLayerProvider) ~= "function" then return false end
+
+    poi:RegisterLayerProvider("Questie", {
+        name = "Questie",
+        GetCategories = function()
+            return {
+                {
+                    id = "availablequests",
+                    name = "Available quests",
+                    IsEnabled = function() return Settings().iconsEnabled end,
+                    SetEnabled = function(_, enabled)
+                        Settings().iconsEnabled = enabled and true or false
+                        Refresh()
+                        return true
+                    end,
+                },
+                {
+                    id = "nativequestgivers",
+                    name = "Carbonite quest givers",
+                    IsEnabled = function() return Settings().nativeQuestGivers end,
+                    SetEnabled = function(_, enabled)
+                        Settings().nativeQuestGivers = enabled and true or false
+                        local carbonite = GetCarboniteAPI()
+                        if carbonite then carbonite:SetNativeAvailableQuestGiversEnabled(Settings().nativeQuestGivers) end
+                        return true
+                    end,
+                },
+            }
+        end,
+    })
+    Bridge.layerRegistered = true
+    return true
 end
 
 local function TrackSelectedMarker(que)
@@ -281,6 +371,7 @@ Bridge:SetScript("OnUpdate", function(self, elapsed)
     self.elapsed = 0
     Settings()
     Register()
+    RegisterLayerProvider()
     InstallPreparationHook()
     InstallMenu()
 end)
